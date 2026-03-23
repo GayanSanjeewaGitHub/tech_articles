@@ -102,3 +102,5 @@ The output must be ready to save directly as a .md file.
 <User Input>
 [PASTE YOUR VIDEO TRANSCRIPT OR ARTICLE HERE]
 </User Input>
+
+try to add bullet point to make it easy to read
