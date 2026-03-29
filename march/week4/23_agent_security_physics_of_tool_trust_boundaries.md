@@ -40,7 +40,7 @@ An agent is not secure because the model has good intentions. It is secure only 
 ### Thinking Shifts
 
 - Stop treating the prompt as just conversation.
-- Start treating the prompt as untrusted input aimed at a decision-making system.
+- Start trea input aimed at a deting the prompt as untrustedcision-making system.
 - Stop thinking tools are helpful extensions.
 - Start thinking tools are privilege boundaries that must be defended.
 - Stop thinking the model alone should catch dangerous behavior.
