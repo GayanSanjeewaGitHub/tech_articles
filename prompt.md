@@ -111,4 +111,4 @@ try to add bullet point to make it easy to read
 
 
 
-give the intuitive explnation for this vide oin the bullet piybt max 5 points
+give the intuitive explnation for this vide oin the bullet piybt max 5 points and create in the .md
