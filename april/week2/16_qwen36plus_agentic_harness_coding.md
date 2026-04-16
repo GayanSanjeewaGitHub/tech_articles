@@ -1,0 +1,13 @@
+# Qwen 3.6 Plus: Why the Agentic Harness Matters More Than the Model
+
+## 5 Intuitive Takeaways
+
+1. **The same model produces dramatically different results depending on whether it runs in a chat session or an agentic harness** — Qwen 3.6 Plus in a single-pass chat couldn't accurately render an ISS tracker (missing the station entirely). The exact same model wrapped in an agentic loop (plan → execute → evaluate → iterate) produced a pinpoint-accurate real-time ISS tracker with proper Earth representation. The harness gives the model multiple passes to self-correct, and that iterative refinement is the difference between a broken demo and production-quality output.
+
+2. **Qwen 3.6 Plus is a proprietary reasoning model approaching frontier performance — but it's not open-weight** — this release benchmarks close to Opus 4.6 and outperforms many models on agentic coding tasks. It features 1M context window, multimodal input (images + video), interleaved thinking (reason → act → reason again), and computer-use agent capabilities. However, unlike typical Qwen open-weight releases, the "Plus" series remains proprietary. Open-weight variants are expected separately.
+
+3. **Interleaved thinking is the key architectural feature — the model reasons, acts, observes the result, then reasons again** — unlike single-pass generation where the model writes all code at once, interleaved thinking lets the model pause after executing an action, inspect the output, and adjust its reasoning before the next step. This is what enables complex multi-component outputs (3D visualizations, simulations with weather/traffic/time controls) that would fail in a single generation pass.
+
+4. **The model has a built-in self-correction step at the end of its chain-of-thought — but it still fails on attention misdirection** — in every response, the reasoning trace ends with a self-verification/refinement phase, which appears to be an intentionally trained behavior. Despite this, the model still falls for classic misguided-attention traps (e.g., treating "just take the goat across" as the full river-crossing puzzle). Strong reasoning doesn't eliminate pattern-matching shortcuts when the prompt triggers a familiar template.
+
+5. **"Choose your harness wisely" is the practical takeaway — the model is the engine, the harness is the car** — tools like OpenCode, Kilo Code, and Qwen Code each provide different agentic scaffolding (planning, execution, testing, iteration). The same frontier model will look mediocre in one harness and excellent in another. For production use, the harness selection — how the model plans, how many iteration cycles it gets, whether it can test its own output — matters as much or more than which model you pick.
