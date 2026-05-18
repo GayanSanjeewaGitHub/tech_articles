@@ -66,7 +66,7 @@ Include code only if it sharpens the story. When you do:
 </Code Examples>
 
 <Writing Rules>
-- Word count: ~300 words total. Hard ceiling at 350.
+- Word count: ~180 words total. Hard ceiling at 350.
 - Lead with a concrete scene, not a definition.
 - Never explain a solution before the reader feels the problem.
 - Drop all references to speakers, creators, brands, video sources, or organizations unless the technical concept is meaningless without them.
