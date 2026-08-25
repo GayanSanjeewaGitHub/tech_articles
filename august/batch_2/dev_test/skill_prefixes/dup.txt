@@ -1,0 +1,1 @@
+Task: duplicate every character in the input string twice.

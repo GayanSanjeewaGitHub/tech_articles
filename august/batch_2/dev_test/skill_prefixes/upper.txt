@@ -1,0 +1,1 @@
+Task: convert every letter in the input string to uppercase.
