@@ -1,0 +1,631 @@
+                             Full Course From Scratch · 2026 Working Note on Agentic AI Practice
+
+ Graph Engineering for Multi-Agentic Systems:
+              The Andrew Ng Playbook
+
+      Based on Andrew Ng's courses, presentations, and the DeepLearning.AI curriculum
+Including the July 2026 Agentic Knowledge Graphs course (DeepLearning.AI + Neo4j + Google ADK)
+
+  Independently compiled, July 2026 -- not affiliated with or endorsed by Andrew Ng or DeepLearning.AI
+
+                                                                                                                           Shares data
+
+                             Architect Agent                    Handoff
+                             planning + reflection
+                   feedback                                              Tech Lead Agent                          Handoff               Developer Agent
+                                                         reads              review + routing                                               tool use + code
+User
+                                                                                                                                                reads/writes
+
+                                                                               Knowledge Graph
+                                                                         shared state · provenance · persistence
+
+Fig. 1. Graph-grounded multi-agent architecture. The User delegates to an Architect Agent, which hands off to a Tech Lead and Developer Agent through typed
+                    handoffs. All agents read from and write to a shared Knowledge Graph. In-loop feedback flows back to the User at each stage.
+
+Abstract--Andrew Ng proved that GPT-3.5 wrapped in an agen-              criticism. A zero-shot LLM is usually denied all of those
+tic workflow scores 95.1% on HumanEval, outperforming                    opportunities. Despite that constraint, modern models
+GPT-4 at 67.0% in zero-shot mode. The architecture matters               perform remarkably well. The central claim of agentic design
+more than the model. Ng identifies four design patterns -- Re-           is not that direct prompting is useless. The claim is that many
+flection, Tool Use, Planning, and Multi-Agent Collaboration.             tasks become substantially more reliable when the model is
+Anthropic independently formalized five production workflows.            placed inside a workflow that permits iteration, evidence
+This note presents all nine patterns with implementation guid-           gathering, decomposition, and role separation.
+ance, maps how they compose from simple loops into graph ar-
+chitectures, and provides a staged build path from day one to                The HumanEval example makes the architecture argu-
+production. In July 2026, Ng released a course on building               ment concrete. As reported by Ng, GPT-3.5 used zero-shot
+agentic knowledge graphs from scratch, positioning graphs as             solves 48.1% of the benchmark, while GPT-4 used zero-shot
+the natural evolution beyond loops for systems that need per-            solves 67.0%. When GPT-3.5 is wrapped in an agentic work-
+sistent state, cross-session reasoning, and multi-agent coordina-        flow, the reported score rises to 95.1%. The improvement
+tion. The central thesis: a loop externalizes revision, a chain          from GPT-3.5 to GPT-4 is therefore dwarfed by the improve-
+externalizes task order, a network externalizes role specializa-         ment associated with iterative workflow design. Ng summar-
+tion, and a graph externalizes shared state and relationships.           izes: "AI agentic workflows will drive massive AI progress
+Once multiple workers must preserve facts across sessions,               this year -- perhaps even more than the next generation of
+coordinate without copying transcripts, and explain why a                foundation models." The statement shifts attention from
+result changed, the system needs a durable information layer.            model selection to system design.
+
+    Index Terms--Agentic AI, design patterns, reflection, tool use,          Ng's four patterns provide the initial vocabulary.
+planning, multi-agent collaboration, workflow orchestration, graph       Reflection lets a model inspect and revise its work. Tool Use
+architecture, knowledge graphs, LLM agents.                              lets it obtain information outside its parameters. Planning lets
+                                                                         it select steps. Multi-Agent Collaboration lets multiple
+                            I. INTRODUCTION                              instances contribute distinct capabilities. The key synthesis
+                                                                         of this note is that these patterns are not isolated recipes.
+Asking an LLM to generate a useful output in one pass is                 They are stages in the externalization of cognition. A loop
+difficult for the same reason that writing a polished essay in
+one uninterrupted pass is difficult. Ng's analogy is deliber-
+ately ordinary: a human writer drafts, reads, deletes, checks
+sources, reorganizes paragraphs, and asks other people for
+externalizes revision. A chain externalizes task order. A             @dataclass
+network externalizes role specialization. A graph externalizes        class Critique:
+shared state and relationships.
+                                                                             satisfactory: bool
+    A. Why "Graphs vs. Loops" Matters Now                                    issues: list[str]
+                                                                             revision_instructions: list[str]
+In July 2026, the agentic AI community is actively debating
+the next layer beyond loops. Peter Steinberger's post -- "Are         def reflect(task, llm, max_iterations=3):
+we still talking loops, or did we shift to graphs yet?" -- drew              draft = llm.generate(task)
+over 2.7 million views. Within the same week, Ng released a                  for _ in range(max_iterations):
+free course on building agentic knowledge graphs from                                feedback = llm.evaluate(task=task, draft=draft)
+scratch (DeepLearning.AI, taught by Neo4j's Andreas                                  if feedback.satisfactory:
+Kollegger), covering graph construction, multi-agent system                                 return draft
+architecture on graphs, and practical demonstrations using                           draft = llm.revise(task, draft, feedback)
+Google's Agent Development Kit (ADK). The course posi-                       return draft
+tions graphs as the foundational infrastructure for agents that
+need to persist facts, share state, and reason across sessions.         Ng's coding example is direct: a coder agent writes code,
+                                                                    then receives a critique prompt. The evaluator often catches
+    The decision tree is simpler than the debate makes it           bugs, missing edge cases, or poor structure that the first pass
+sound. A single well-scoped task, retryable, with human             overlooked. Ng reports: "I've been delighted by how much it
+review of output -- a loop is correct. Multiple specialized         improved my applications' results" and describes reflection
+agents, branching logic, state that must persist across             as "pretty robust technology -- I can almost always get them
+sessions -- graph-based orchestration. The two are not              to work well."
+competing paradigms; they are successive stages in the ex-
+ternalization of cognition, and most production systems will            Failure modes: (1) Self-confirmation -- the critic repeats
+use both.                                                           assumptions that produced the draft. (2) Rubric drift -- the
+                                                                    evaluator rewards fluency instead of correctness. (3) Non-
+    B. Contributions                                                monotonic revision -- a fix introduces another bug. Con-
+                                                                    trols: keep an immutable task statement, compare every
+This synthesis makes three contributions. First, it presents        revision against the rubric, run deterministic checks before
+Ng's four design patterns and Anthropic's five workflow             subjective evaluation, cap iterations.
+patterns in one implementation-oriented account. Second, it
+maps how the patterns compose into loop, chain, network,                The first practical tip is to separate critique from
+and graph architectures. Third, it offers a decision framework      rewriting. Do not ask "improve this" and accept an opaque
+and a staged build path that treats evaluation, cost, latency,      replacement. Request a structured list of issues first, then
+and debuggability as first-class constraints.                       feed that list into a distinct revision step. The second tip is to
+                                                                    make the evaluator cite evidence from the draft, tests, or
+                   II. THE FOUR DESIGN PATTERNS                     source material. A critique that says "the function might not
+                                                                    handle edge cases" is less useful than one that says "line 12
+    A. Step 1: Reflection                                           does not handle the case where the input list is empty, which
+                                                                    violates requirement 3 in the specification." The third tip is to
+Reflection is an iterative process in which an LLM examines         store every intermediate artifact -- draft, critique, revision,
+an output, compares it with a task or rubric, identifies            and stopping decision -- so that engineers can diagnose
+defects, and produces a revision. The pattern can be imple-         whether failures came from weak generation, weak evalu-
+mented with one model instance alternating between generat-         ation, or a faulty stopping rule. Without this record,
+or and critic prompts, or with two role-separated instances.        debugging a reflection loop is like debugging a program
+The important property is not the number of model objects           without logs.
+-- it is the presence of an explicit feedback loop and a
+stopping rule.                                                          B. Step 2: Tool Use
+
+                                                                    Tool Use allows an LLM to select and call external capabilit-
+                                                                    ies: web search, code execution, databases, APIs. The model
+                                                                    contributes language understanding and decision making; the
+                                                                    tool contributes grounded data or deterministic action. Ng
+                                                                    observes that early tool-use work came from the computer
+                                                                    vision community because language models could not dir-
+
+                                                                 2
+ectly manipulate images -- "the only option was that the               def plan_and_execute(objective, llm, tools, budget):
+LLM generate a function call." A model that can execute                       plan = llm.create_plan(objective) # JSON steps
+code can verify its own logic. A model that can search can                    results = []
+ground its claims. Tool use transforms an LLM from a closed                   for step in plan.steps:
+system into one that can check its work against reality.                              result = execute_step(step, tools, results)
+                                                                                      results.append(result)
+  @dataclass                                                                          if result.failed:
+  class ToolCall:                                                                            plan = llm.replan(
+                                                                                                    objective, results,
+         name: str                                                                                  remaining_budget=budget)
+         arguments: dict                                                      return llm.synthesize(results)
+
+  tools = {                                                              The code illustrates the critical pattern: when a step fails,
+         "web_search": search_web,                                   the agent replans with context of what already worked. This
+         "run_code": execute_python,                                 is the "preserve successful work across replans" principle.
+         "query_db": database_query,                                 Without it, a failure at step 5 of 8 discards the successful
+                                                                     results of steps 1­4 and starts over, wasting both tokens and
+  }                                                                  time. With it, the replan builds on established ground.
+
+  def agent_with_tools(task, llm, tools, max_steps=10):                  Ng also mentions using research agents for his own work:
+         context = [task]                                            "one piece of research that I don't feel like Googling myself
+         for _ in range(max_steps):                                  -- I send it to the research agent, come back in a few
+                 action = llm.choose_action(context, tools)          minutes and see what it's come up with." This captures the
+                 if action.name == "finish":                         operational reality of planning agents: they are most useful
+                        return llm.synthesize(context)               when the human's time is more expensive than the agent's
+                 result = tools[action.name](**action.arguments)     tokens, and when the task is well-defined enough that the
+                 context.append({"tool": action.name,                agent's plan can be evaluated against objective criteria.
+                                              "result": result})     Open-ended research ("find something interesting") produces
+         return llm.synthesize(context)                              plans that are hard to evaluate and easy to waste tokens on;
+                                                                     focused research ("find all papers citing X that report Y")
+    Failure modes: (1) Wrong tool selection -- calling a             produces plans that are straightforward to validate.
+search when a database query is needed. (2) Invalid argu-
+ments -- passing malformed inputs that the tool cannot                   Failure modes: (1) Over-planning -- generating elaborate
+process. (3) Trusting tool output blindly -- not validating          plans for simple tasks that a single call could handle. (2)
+that a search result is relevant or that code execution              Plan-execution gap -- the plan describes steps the agent
+produced the expected output type. (4) Tool overuse --               cannot actually perform with its available tools. (3)
+calling tools when sufficient context already exists in the          Cascading failure -- one bad step corrupts all subsequent
+window, wasting tokens and latency. Controls: typed tool             steps because they depend on its output. (4) Unbounded
+schemas with validated arguments, result confirmation                replanning -- the agent replans indefinitely without conver-
+before incorporation, permission boundaries that separate            ging on a solution. Controls: validate dependencies before
+read from write access, and retry limits that prevent infinite       execution (can every step's inputs be produced by a prior step
+tool-call loops.                                                     or a tool?), preserve successful work across replans, bound
+                                                                     total steps, and define explicit failure criteria ("if step fails
+    C. Step 3: Planning                                              twice after replan, escalate to human rather than trying a
+                                                                     third time").
+Planning uses an LLM to autonomously decide what se-
+quence of steps to execute. Ng describes a live demo where               D. Step 4: Multi-Agent Collaboration
+his research agent's web search API returned a rate-limiting
+error: "To my surprise, the agent pivoted deftly to a                Multi-Agent Collaboration involves multiple LLM instances,
+Wikipedia search tool -- which I had forgotten I'd given it --       each prompted with different roles, working together on
+and completed the task." Ng's maturity assessment is                 tasks that benefit from specialization. Ng's ChatDev
+explicit: "more emerging -- sometimes my mind is blown by            example: "completely open source, runs on my laptop." The
+how well they work, but at least at this moment in time, I           system prompts one LLM to act as CEO, another as designer,
+don't feel like I can always get them to work reliably."
+Planning agents therefore need tighter constraints: structured
+plan formats, dependency validation, bounded step counts,
+and fallback policies.
+
+                                                                  3
+another as product manager, another as tester. "This flock of      "decompose easily and cleanly into fixed subtasks." Strength:
+agents collaborate -- if you tell it 'please develop a Go          predictability, each stage testable separately. Weakness:
+game,' they'll actually spend a few minutes writing code,          inflexibility to unexpected inputs. A practical implementation
+testing it, iterating, and then generate surprisingly complex      uses typed intermediate outputs between stages so that each
+programs."                                                         stage validates its input before processing -- a malformed
+                                                                   output from stage 2 is caught at stage 3's entrance, not at the
+    Ng calls multi-agent collaboration "more emerging" but         final output.
+says it "works much better than you might think." The
+practical tip: define an artifact contract for every handoff.          Routing classifies an input and sends it to a specialized
+The researcher returns claims with sources. The planner            prompt, tool set, or workflow. A support system may route
+returns typed steps. The coder returns code and assumptions.       billing questions to a billing agent, technical incidents to a
+The evaluator returns defects and a decision. Agents should        diagnostic workflow. Routing enables separation of concerns
+communicate through artifacts and shared state, not unlim-         without requiring agents to converse. Main failure mode:
+ited conversational history. This constraint prepares the          misclassification. Controls include confidence thresholds
+system for graph architecture.                                     (below 0.8  fallback route) and explicit fallback paths for
+                                                                   inputs that match no category. Routing is also the cheapest
+    Multi-agent debate -- having different agents argue            form of "intelligence" in a multi-agent system: a fast, small
+different positions -- "actually results in better performance     model classifies; a capable, expensive model processes.
+as well." The mechanism is straightforward: when two agents
+with different role prompts examine the same evidence, they            Parallelization runs multiple calls simultaneously -- sec-
+tend to catch different error classes. A coder agent optimizes     tioning (independent subtasks divided among workers) or
+for functionality; a reviewer agent optimizes for edge cases;      voting (same task run multiple times, aggregator selects
+a tester agent optimizes for coverage. No single rubric            best). Sectioning reduces latency; voting increases robust-
+captures all three -- but three agents with three rubrics          ness. The critical caveat: ten outputs from the same model
+approximate a team. The practical limitation is cost: three        with nearly identical prompts are not ten independent
+agents consume three times the tokens, and if all three see        judgments. For voting to add genuine signal, the prompts or
+the same evidence and optimize the same weak rubric, the           models should differ in ways that induce different error
+system reproduces the same error three times at higher cost.       distributions -- a code review with three different rubrics
+The test for whether to add an agent: does this role catch an      (correctness, security, performance) produces more signal
+error class that existing roles demonstrably miss?                 than three identical reviews.
+
+                                         TABLE I                       Orchestrator-Workers uses a central LLM to analyze a
+                   PATTERN MATURITy ASSESSMENT (ANDREw NG)         task, create subtasks dynamically, delegate them to workers,
+                                                                   and synthesize outputs. This pattern combines Planning and
+Pattern   Maturity Ng's Assessment                                 Multi-Agent Collaboration. The architecture is powerful
+                                                                   because it adapts, but the orchestrator can become a context
+Reflection Robust  "I can almost always get them to work well"     bottleneck. Practical systems should require workers to
+                                                                   return structured artifacts rather than raw conversation --
+Tool Use  Robust   Widely deployed, well-understood                bounded summaries with typed fields, not open-ended text.
+                                                                   The orchestrator's context stays manageable when it receives
+Planning  Emerging "Less mature, less predictable"                 a 200-token artifact per worker rather than a 5,000-token
+                                                                   conversation transcript.
+Multi-Agent Emerging "Works much better than you might think"
+                                                                       Evaluator-Optimizer separates generation from evalu-
+          III. ANTHROPIC'S FIVE wORKFLOw PATTERNS                  ation: one LLM produces a response, another evaluates
+                                                                   against explicit criteria, the loop continues until a threshold
+Anthropic's "Building Effective Agents" distinguishes work-        is met. This is Reflection formalized as a production
+flows (LLMs and tools operating through predefined code            workflow with explicit role separation. Especially effective
+paths) from agents (the model dynamically directs its own          for translation, code with security requirements, professional
+process). The distinction resists unnecessary autonomy:            communications where tone matters, and structured docu-
+many reliable systems can be built from simple, composable         ments. Anthropic notes this pattern typically runs 2­4 cycles,
+workflows.
+
+    Prompt Chaining sends output of one call into the next in
+a fixed sequence; each stage performs a narrow transforma-
+tion with programmatic checks between. Use when tasks
+
+                                                                4
+significantly improving output quality while maintaining ac-         tion), summarize (losing precision), or restructure -- which
+curacy.                                                              leads to the chain.
+
+A. Choosing Workflow Before Agent                                        B. The Chain Stage
+
+The production default should be the simplest pattern that           Work is divided into a fixed sequence of specialized trans-
+satisfies the task. Use a direct LLM call for a simple               formations. The chain externalizes order into application
+question. Use a chain when the steps are fixed. Use routing          code. Each stage can have its own prompt, model, tools, and
+when requests belong to clear categories. Use parallel               validation. Compared with a reflective loop, the chain is
+workers when independent coverage matters. Use an orches-            more predictable because the path is known. The limitation:
+trator when decomposition must be discovered. Use evaluat-           unexpected cases must be anticipated. A chain that processes
+or-optimizer when quality can be judged and improved iterat-         documents through "extract  validate  summarize 
+ively. This order is not conservative for its own sake. Each         format" works perfectly when every document fits the
+step adds cost, latency, nondeterminism, and failure modes.          expected structure. When a document is in an unexpected
+Agentic design is effective when complexity is added in              format, the chain either fails at the extraction stage (good --
+response to observed errors, not when every available pattern        the failure is visible and early) or passes garbled output
+is included from the beginning.                                      forward (bad -- the failure compounds silently through
+                                                                     every subsequent stage). Programmatic gates between stages
+                                        TABLE II                     are the fix: each gate checks whether the output of the
+                MAPPING NG'S PATTERNS TO ANTHROPIC'S wORKFLOwS       previous stage meets the input contract of the next, and
+                                                                     routes failures to a fallback rather than letting them propag-
+Ng Pat-   Anthropic Work-     Key Addition                           ate.
+tern      flow
+                                                                         C. The Network Stage
+Reflection Evaluator-Optimizer Explicit role separation and
+                                               stopping criteria     Multiple role-specialized workers are introduced. An orches-
+                                                                     trator delegates, workers act, results return for synthesis. The
+Tool Use Augmented LLM        Building block for all workflows       central limitation is context management. As Anthropic
+                                                                     notes: "context grows too complex for one agent to manage
+Planning  Orch.-Workers +     Dynamic vs. fixed decomposition        effectively, creating performance bottlenecks." The orches-
+          Chaining                                                   trator may become a conversational hub receiving every
+                                                                     worker's full output. The context management problem
+Multi-    Parallel. + Orch.-  Production orchestration               scales quadratically with team size: with 5 workers, the
+Agent     Workers                                                    orchestrator must hold 5 outputs; with 10 workers, 10
+                                                                     outputs; and each output may itself be the product of a multi-
+                     IV. FROM LOOPS TO GRAPHS                        turn interaction. At some point the orchestrator's window is
+                                                                     more summary than substance, and the summaries have lost
+The combined pattern vocabulary describes a progression in           the detail that matters. This is the moment that motivates the
+how state, control, and responsibility are organized. The            graph.
+progression is not a maturity ladder every project must
+complete; many tasks should remain direct calls or fixed                 D. The Graph Stage
+chains.
+                                                                     The graph stage externalizes shared state into a durable,
+    A. The Loop Stage                                                queryable structure (Fig. 1). Each worker reads the subgraph
+                                                                     relevant to its task and writes new entities and relations back.
+One agent repeatedly inspects and revises its own work.              The orchestrator's context stays small; the shared state lives
+Reflection is the defining mechanism, often supported by             in the graph. This is the architecture Ng's July 2026 course
+tools. The loop is compact, easy to prototype, and effective         teaches students to build from scratch.
+for tasks within one context window. It breaks down when
+the task contains too much evidence, too many independent                The course, taught by Neo4j's Andreas Kollegger and
+concerns, or too much history. Every iteration may resend            hosted on DeepLearning.AI, covers four progressions: (1)
+task, draft, critique, tool results, and prior decisions --          what agentic knowledge graphs are and why agents need
+context becomes expensive and noisy. The loop's strength is
+also its limitation: everything lives in one context window,
+which means everything must fit in one context window.
+When it doesn't, the options are to truncate (losing informa-
+
+                                                                  5
+them; (2) how to build the first agentic graph from raw data          V. THE BENCHMARK EVIDENCE
+-- entities as nodes, relationships as typed edges; (3) how
+multi-agent systems are architected on graph structures, with                                TABLE III
+extraction agents feeding validated entities into a persistent        HUMANEVAL CODING BENCHMARK (REPORTED By NG)
+store; and (4) building working implementations using
+Google's Agent Development Kit (ADK). The course posi-                Configuration               Score (%)
+tions knowledge graphs not as an advanced feature to add              GPT-3.5 zero-shot           48.1
+later but as a foundational component that should be                  GPT-4 zero-shot             67.0
+designed from the beginning for any system requiring cross-           GPT-3.5 + agentic workflow  95.1
+session reasoning.
+                                                                      Key insight: "the improvement from GPT-3.5 to GPT-4 is
+    A knowledge graph serves multi-agent systems in three             dwarfed by incorporating an iterative agent workflow." This
+distinct roles. As shared memory for orchestrator-workers:            means: invest in workflow architecture, not just model
+workers read from and write to the graph directly, replacing          upgrades. Ng: "if you're looking forward to running your
+the fragile alternative of passing summaries through the              thing on GPT-5 zero-shot, you may be able to get closer to
+orchestrator's bottleneck. This is the multi-agent analogue of        that level of performance on some applications with agentic
+Anthropic's principle that "the session is not the context            reasoning on an earlier model."
+window." As grounding layer for evaluator-optimizer: the
+evaluator checks claims against graph edges with proven-                  One additional insight Ng emphasizes: fast token genera-
+ance, producing feedback like "triple (X, works_at, Y) does           tion is important for agentic workflows because the LLM
+not exist in the graph; the graph contains (X, left, Y) from          generates tokens for other LLMs to read, not for humans.
+document Z" rather than "this seems off." As persistent world         "Being able to generate tokens way faster than any human
+model for loops: the graph survives context-window flushes            can read is fantastic." Generating more tokens quickly from
+-- the agent forgets, the graph does not.                             even a slightly lower quality LLM "might give good results
+                                                                      compared to slower tokens from a better LLM -- because it
+    E. A Minimal Graph Schema                                         may let you go around this loop a lot more times." This
+                                                                      makes fast inference a direct multiplier for agentic system
+A useful schema begins with five node types: Entity (person,          performance.
+organization, product, concept), Claim (statement that may
+be supported or contradicted), Source (document, API                      The benchmark data has a second implication that is less
+response, test result), Artifact (plan, draft, code, report), and     discussed but equally important. If a weaker model with a
+Run (execution record). Edges capture relationships: men-             strong process can outperform a stronger model asked to
+tions , supports , contradicts , derived_from , super-                answer once, then model selection and workflow design are
+sedes . Every claim retains provenance. Every revision                not independent decisions. The optimal system is not neces-
+points to the prior version. The minimal write operation              sarily the strongest model in the simplest workflow; it may
+should be additive: rather than overwriting a claim silently,         be a weaker, cheaper, faster model in a compound workflow
+create a new version and link it with supersedes .                    that uses the savings to run more iterations, more workers, or
+                                                                      more evaluation rounds. This is the economic argument for
+    F. Graph Architecture Is Not Automatic Truth                      the staged build path: each stage's cost must be justified by
+                                                                      measurable lift, and a cheaper model that funds more itera-
+A graph can preserve errors as efficiently as facts. Entity           tions may outperform an expensive model that runs once.
+resolution can merge distinct organizations. Extraction can
+attach the wrong date. A confident evaluator can mark a                   Ng's insight about fast inference compounds with the
+weak source as sufficient. Graph-grounded systems therefore           staged build path. At the reflection stage, fast inference lets
+require data quality mechanisms: schema validation, canon-            the loop run more iterations within the same latency budget.
+ical identifiers, provenance, conflict representation,                At the multi-agent stage, fast inference lets the orchestrator
+confidence calibration, and periodic review.                          dispatch and receive results from workers faster, reducing
+                                                                      end-to-end latency. At the graph stage, fast inference lets
+                                                                      extraction agents process larger corpora in less time, building
+                                                                      richer graphs that benefit all downstream agents. The speed
+                                                                      of the model is not just a cost optimization -- it is a
+
+                                                                   6
+capability multiplier that enables compound architectures            agent that runs 8 steps at 2,000 tokens each plus a 3,000-
+that would be impractical with slow inference.                       token synthesis is consuming ~19,000 tokens, roughly 10× a
+                                                                     direct call. The lift in task completion rate must justify this
+             VI. PRACTICAL IMPLEMENTATION GUIDE                      cost, and for simple tasks it usually does not.
+
+The recommended build path starts with the smallest reliable             D. Go Multi-Agent -- Week 2
+loop and adds one capability at a time. Each stage should
+have a baseline, a task-level metric, a cost budget, and a           Split your task into roles: generator + critic minimum. Use
+rollback path.                                                       same model, different system prompts. Iterate until critic is
+                                                                     satisfied or iteration limit reached. Define artifact contracts
+    A. Start with Reflection -- Day 1                                for every handoff.
+
+Choose one existing LLM call whose output can be evalu-              E. Wire Into a Graph -- Month 1
+ated. Add a second call that critiques the first against an
+explicit rubric. Feed the critique into a revision call.             Add persistent state between agent runs. Start simple: shared
+Compare the revised output with the baseline. Expected               JSON file or database. Graduate to knowledge graph when
+improvement: 10­30% quality boost, but the team should               agents need to chain facts across sessions. Add provenance
+measure its own lift. The implementation is deliberately             tracking and version history. This is the stage Ng's July 2026
+minimal: two additional LLM calls and a for-loop. The rubric         course covers in detail: building the graph from scratch using
+should be written before the first run, not discovered after --      Google ADK, with extraction agents feeding entities into a
+"improve this" is not a rubric. A good starting rubric names         Neo4j-backed knowledge graph that multiple agents query
+the specific qualities the output must have (correct informa-        and extend.
+tion, appropriate length, required sections) and the specific
+defects the critic should look for (unsupported claims,                                                     TABLE IV
+missing citations, logical contradictions). The rubric itself is                                    IMPLEMENTATION TIMELINE
+a kind of unit test for the output.
+                                                                     Step                 Time        Complexity Expected Lift
+    B. Add Tool Use -- Day 2
+                                                                     Add reflection       1 day       Low           10­30% quality
+Give the agent access to at least one tool: code execution or
+web search. Let the agent decide when to use it. Validate tool       Add tool use         1 day       Low           New capabilities
+results before incorporating them. Watch for the "rerouting
+around failures" moment Ng describes -- the agent discover-          Planning agent       1 week Medium             Complex tasks
+ing and using a fallback tool is one of the clearest signs that
+the agentic architecture is adding value beyond what a fixed         Multi-agent          2 weeks Medium            Better quality
+script could provide. Start with read-only tools before adding
+write access; a tool that reads a database is safe to                Graph architecture 1 month High                Persistent, scalable
+experiment with, while a tool that modifies production data
+requires the same permission controls you would apply to a                           VII. DECISION FRAMEwORK
+junior engineer.
+                                                                                                    TABLE V
+    C. Build a Planning Agent -- Week 1                                                   wHEN TO USE EACH PATTERN
+
+For complex tasks, have the LLM write a plan as structured           Situation            Start With  Why
+JSON before executing. Execute each step, collect results. If        Better output qual-  Reflection
+a step fails, replan with context of what already worked.            ity                              Cheapest, most reliable improve-
+Preserve successful work across replans. The practical               Need external data   Tool Use    ment
+constraint: planning agents consume significantly more                                                Grounds answers in real informa-
+tokens than direct calls because the plan itself is generated        Complex multi-step   Planning    tion
+text, each step's execution generates text, and the synthesis of                                      Decomposes into manageable
+results generates text. Budget accordingly -- a planning             Multiple perspect-   Multi-      steps
+                                                                     ives                 Agent       Different roles catch different er-
+                                                                     Cross-session state  Graph       rors
+                                                                                          arch.       Survives context window flushes
+                                                                     Simple single QA     Zero-shot
+                                                                                                      Don't over-engineer
+
+                                                                     The rule of thumb: if the current pattern's failure mode is
+                                                                     understood and the next pattern addresses that specific
+                                                                     failure, add it. If the failure mode is unclear, measure before
+
+                                                                  7
+adding complexity. Each pattern adds cost, latency, and             its context linearly with team size until it exceeds the win-
+debugging surface. The cheapest pattern that satisfies the          dow. The missing baseline: deploying an agentic system
+task is usually the right one.                                      without first measuring the performance of a zero-shot call,
+                                                                    so the team cannot tell whether the agentic overhead is
+    A. Five Decision Rules                                          producing lift or just cost. The premature agent: building a
+                                                                    multi-agent system for a task that a single well-prompted call
+Five rules formalize the decision framework for practition-         handles perfectly, motivated by the architectural pattern
+ers. Rule 1: Start with the cheapest pattern. A reflection loop     rather than the task's requirements.
+is cheaper than a multi-agent system, and a multi-agent
+system is cheaper than a graph architecture. Start with the                        VIII. THE GRAPHS VS. LOOPS DEBATE
+cheapest and add complexity only when a specific, measured
+failure demands it. Rule 2: Measure before promoting. Be-           The July 2026 debate crystallized around a real question:
+fore adding the next pattern, establish a baseline with the         when does a loop stop being sufficient and a graph become
+current pattern and measure the failure rate you expect the         necessary? The answer maps onto three criteria. First, session
+new pattern to address. If the failure rate is below 5%, the        persistence: if the work spans multiple sessions and tran-
+new pattern's complexity cost likely exceeds its benefit. Rule      script replay is no longer practical, state needs to live outside
+3: Match control to risk. High-stakes tasks (financial transac-     the context window -- the graph. Second, cross-agent co-
+tions, safety-critical operations) should use predictable           ordination: if multiple specialized agents must share facts
+patterns (chains, evaluation loops) with explicit gates. Low-       without copying entire transcripts through a bottleneck, the
+stakes tasks (brainstorming, research drafts) can tolerate the      graph is the shared blackboard. Third, traceability: if the sys-
+unpredictability of planning and multi-agent systems. Rule 4:       tem must explain why a result changed, provenance on typed
+Count tokens, not agents. The cost of an agentic system is          edges is the infrastructure.
+proportional to tokens consumed, not to the number of
+conceptual agents. A three-agent system where each agent                Loops handle the first criterion poorly (state lives in-
+runs for 20,000 tokens costs the same as one agent running          context and is flushed), the second not at all (a loop is one
+for 60,000 tokens. Design for token efficiency, not                 agent), and the third weakly (the conversation history is the
+conceptual elegance. Rule 5: The graph earns itself. A know-        only record). Graphs handle all three structurally. But loops
+ledge graph is justified when the same entity or relationship       are simpler to build, cheaper to run, and sufficient for the
+is queried by more than one agent or across more than one           vast majority of single-agent, single-session tasks. The
+session. A graph that is written to once and never queried is a     engineering decision is not "which is better" but "when does
+database table with extra overhead.                                 the loop's limitation become the binding constraint."
+
+    B. Anti-Patterns to Avoid                                           The practical answer from the community's experience:
+                                                                    start with a loop, measure where it fails, and add graph
+Seven anti-patterns recur in production agentic systems. The        infrastructure at the specific failure point -- not before. A
+everything-agent: one agent with every tool, every role, and        loop with a state file is already partway to a graph. A graph
+a 50-page system prompt that tries to handle all cases -- this      that nobody queries is an overengineered loop.
+agent has no clear responsibility and no clear failure mode,
+making it impossible to debug. The echo chamber: multiple               The new DeepLearning.AI course makes the graph stage
+agents with identical prompts and identical evidence                accessible. Previously, building a knowledge graph required
+producing identical outputs at higher cost -- more agents           expertise in graph databases, ontology design, and NLP
+does not mean more intelligence. The infinite loop: a reflec-       extraction pipelines. The course shows that with modern
+tion or planning agent without a stopping rule that iterates        tools (Google ADK for agent orchestration, Neo4j for graph
+until the token budget is exhausted, producing marginal             storage, and an LLM for extraction), a working agentic
+stylistic changes rather than substantive improvements. The         knowledge graph can be built in under an hour. This dramat-
+phantom graph: a knowledge graph with an elaborate onto-            ically lowers the bar for teams considering the transition
+logy that no agent ever queries -- infrastructure cost without      from loops to graphs, while the decision framework above
+value. The conversational bottleneck: an orchestrator that re-      ensures they make the transition at the right time.
+ceives every worker's full conversation transcript, growing
+
+                                                                 8
+    A. The Compound Architecture                                        Stage  Element           Ask Yourself
+                                                                               Role differenti-
+In practice, production systems rarely use one pattern in               Graph  ation             Do roles catch genuinely different error
+isolation. The most effective architectures compound                    Arch.  Orchestrator      classes?
+patterns: a planning agent that uses reflection at each step,                  budget
+tool use for evidence gathering, multi-agent collaboration for                 Provenance        Does the orchestrator receive bounded
+review, and graph architecture for persistence. The com-                                         summaries?
+pound effect is where the real performance lives -- not in                     Versioning
+any single pattern, but in the specific combination tuned to                                     Does every edge trace to a source docu-
+the task. The build path described in Section VI is designed                   Entity resolu-    ment?
+to make this compounding incremental and measurable                            tion
+rather than all-at-once and opaque.                                                              Are overwrites replaced by superses-
+                                                                                                 sion links?
+    Ng's insight about fast token generation is especially
+relevant for compound architectures. In a system where a                                         Are resolution decisions inspectable?
+planning agent generates a plan, a coder agent implements
+each step, a reviewer agent critiques each implementation,                                             APPENDIX C
+and a graph stores the results, the total token consumption
+can be 10­50× a single direct call. Fast inference at                             Worked Example: From Zero-Shot to Graph in Five Steps
+acceptable quality -- "generating more tokens quickly from
+even a slightly lower quality LLM might give good results               Consider a team building a code-review assistant. The
+compared to slower tokens from a better LLM" -- makes                   progression follows the staged build path exactly.
+these compound systems economically viable rather than
+theoretically interesting.                                                  Day 0 -- Zero-shot baseline: The team sends code to the
+                                                                        LLM with the prompt "review this code for bugs." The
+                     APPENDIX B                                         output is a free-form paragraph that sometimes catches real
+                                                                        issues and sometimes praises correct code. Measured
+            Production Readiness Checklist                              accuracy: 55%.
+
+                              TABLE VII                                     Day 1 -- Add reflection: The team adds a second call:
+            PRODUCTION READINESS CHECKLIST By STAGE                     "Here is your review. Does it cite specific line numbers?
+                                                                        Does it distinguish severity levels? Revise." The revised
+Stage       Element        Ask Yourself                                 review is measurably better: specific line numbers, severity
+Reflection  Rubric                                                      labels, fewer false positives. Measured accuracy: 72%.
+            Iteration cap  Is the evaluation criterion explicit and
+Tool Use    Artifact log   stable?                                          Day 2 -- Add tool use: The reviewer agent can now ex-
+            Schema                                                      ecute the code against a test suite and read linter output.
+Planning    Permissions    Is there a maximum number of revision        Reviews cite concrete test failures instead of hypothetical
+            Fallback       rounds?                                      bugs. Measured accuracy: 84%.
+Multi-      Plan format
+Agent       Step budget    Is every draft, critique, and revision           Week 1 -- Add planning: For large PRs (>500 lines), the
+            Replan policy  stored?                                      agent writes a plan: "review security-sensitive files first, then
+            Artifact con-                                               business logic, then tests." Each section gets a focused
+            tracts         Are tool names, arguments, and return        review with the right rubric. Measured accuracy on large
+                           types validated?                             PRs: 79% (up from 61% with reflection alone).
+
+                           Are read and write permissions separ-            Week 2 -- Add multi-agent: A security reviewer (system
+                           ated?                                        prompt: "you are a security auditor, assume every input is
+                                                                        malicious") runs alongside the general reviewer. The security
+                           What happens when the tool fails or          agent catches injection vulnerabilities the general agent
+                           rate-limits?                                 missed. Combined accuracy: 88%.
+
+                           Are plans structured JSON with de-               Month 1 -- Add graph: Review findings are stored as
+                           pendencies?                                  entities (vulnerability, code pattern, affected file) with typed
+                                                                        relations (found_in, similar_to, fixed_by). When a new PR
+                           Is total step count bounded?                 touches a file that previously had a vulnerability, the
+                                                                        reviewer agent queries the graph and flags the pattern. The
+                           Does successful work survive replan-         graph accumulates institutional knowledge across hundreds
+                           ning?                                        of PRs -- knowledge that no single context window could
+                                                                        hold. Measured accuracy on repeat patterns: 95%.
+                           Does every handoff use typed schem-
+                           as?
+
+                                                                     9
+    The progression illustrates two principles. First, each          consider planning and multi-agent architectures. Graph
+stage earns the right to the next by addressing a specific,          architecture is the least adopted stage, which is consistent
+measured failure of the previous stage. Second, the com-             with its position at the end of the build path and with the fact
+pound effect -- 55%  72%  84%  88%  95% -- is                        that Ng's course on the topic is only days old. The debate on
+far greater than any single stage's contribution. The architec-      X -- "are we still talking loops, or did we shift to graphs
+ture, not the model, is doing the heavy lifting.                     yet?" -- reflects the moment at which the early-adopter
+                                                                     segment is crossing from network-stage to graph-stage, while
+                            IX. LIMITATIONS                          the majority is still in the loop-stage or chain-stage.
+
+Three limitations are worth stating plainly. First, Ng himself           The practical implication for teams: do not skip stages.
+calls Planning and Multi-Agent "emerging" -- they do not             Reflection is the highest-ROI pattern for almost any existing
+always work. "At least at this moment in time, I don't feel          LLM application, and it is also the most mature. A team that
+like I can always get them to work reliably." Second, agentic        cannot demonstrate measurable lift from reflection is
+workflows trade latency for quality. Ng: "we need to learn to        unlikely to benefit from the complexity of multi-agent
+delegate tasks to an AI agent and patiently wait minutes,            coordination or graph architecture. The build path is not a
+maybe even hours, for a response." Third, each loop iteration        ladder of prestige; it is an engineering sequence where each
+costs tokens. More agents do not automatically produce more          stage earns the right to the next by demonstrating that the
+intelligence -- if all agents see the same evidence and              previous stage's failure mode is the binding constraint.
+optimize the same weak rubric, the system reproduces the
+same error several times at higher cost.                                                         XI. CONCLUSION
+
+    Additionally, the HumanEval benchmark is a coding                Ng's four patterns are the vocabulary. Anthropic's five
+benchmark. The 95.1% figure should not be assumed to                 workflows are the grammar. The graph is the language. The
+transfer directly to all domains. Teams should build their own       single most important takeaway: workflow architecture
+evaluation sets and measure lift in their specific context.          matters more than model capability. GPT-3.5 with an agentic
+Graph architecture adds its own failure modes: entity                workflow (95.1%) outperforms GPT-4 in zero-shot mode
+resolution errors, stale provenance, schema drift, and the           (67.0%).
+operational cost of maintaining a durable store. The graph
+amplifies corpus quality, just as the loop amplifies the                 The build path is incremental. Start with reflection -- it
+judgment of its builder.                                             works today, reliably, on most tasks where quality can be
+                                                                     evaluated. Add tools to ground answers in real data. Build
+                       X. INDUSTRy ADOPTION                          planning agents for complex tasks. Go multi-agent when spe-
+                                                                     cialization adds measurable signal. Wire into a graph when
+The adoption trajectory gives context for the maturity               state must persist across sessions and agents must share a
+assessments. A 2025 industry poll found 93% of IT leaders            world model.
+plan to introduce autonomous AI agents within two years,
+and nearly half have already started pilot implementations.              The compound effect of layering patterns is where the
+Deloitte predicts that by 2025, one-quarter of companies             real performance lives. Each pattern addresses a specific
+using generative AI will have launched pilot agentic AI              limitation of the previous stage: reflection addresses single-
+projects, growing to 50% by 2027. In his year-end letter for         pass errors, tools address knowledge gaps, planning ad-
+2025, Ng characterized the year as "the dawn of the AI               dresses complexity, multi-agent addresses perspective limits,
+industrial era" -- a period when AI moved from research and          and graphs address memory limits. The progression is not
+experimentation into industrial-scale infrastructure, with           mandatory, but it is directional.
+capital expenditure across the industry exceeding $300 bil-
+lion.                                                                    Ng's observation captures the broader significance: "The
+                                                                     path to AGI feels like a journey rather than a destination, but
+    The adoption pattern mirrors the staged build path of this       this type of agent workflow could help us take a small step
+note. Most organizations start with reflection (adding a             forward on this very long journey." The engineering version
+review step to an existing LLM call), then add tool use              of the same insight: every important output should be
+(connecting the model to databases and APIs), and only then          traceable to a task, a plan, an artifact, a source, an evaluator
+                                                                     decision, and a bounded execution record. When that is true,
+
+                                                                 10
+loops, tools, plans, workers, and graphs become composable                       Term                Meaning
+engineering mechanisms rather than opaque behavior. The                          Routing             Classify input, send to specialist.
+path from loops to graphs is not a path from simplicity to                       Parallelization     Multiple LLM calls simultaneously.
+complexity -- it is a path from implicit state to explicit state,                Orchestrator-work-  Central LLM delegates to workers.
+from volatile memory to durable memory, and from                                 ers
+estimation to evidence.                                                          Evaluator-optim-    One LLM generates, another evaluates.
+                                                                                 izer
+    A reliable agentic system should make the following                          Graph architecture  Shared persistent memory with typed edges.
+sentence true: every important output can be traced to a task,                   Knowledge graph     Entities as nodes, relationships as edges, with
+a plan, an artifact, a source, an evaluator decision, and a                                          provenance.
+bounded execution record. When that sentence is false, more                      Artifact contract   Typed schema for agent handoffs.
+autonomy usually increases uncertainty. When it is true, the                     Provenance          Source from which a fact was derived.
+system is composable and debuggable regardless of how
+many patterns it compounds. The question to ask of any
+agentic system is not "how many patterns does it use" but
+"can I explain, for any output, why it is what it is." The graph
+-- with its typed edges, provenance, and version history --
+is the infrastructure that makes the answer yes.
+
+                   ACKNOwLEDGMENT & SOURCES
+
+This document is an independent synthesis for study. It is not affiliated
+with or endorsed by Andrew Ng, DeepLearning.AI, Anthropic, Neo4j, or
+Google. Andrew Ng, "What's Next for AI Agentic Workflows," Sequoia
+Capital AI Ascent, Mar. 2024; "Four AI Agent Strategies," The Batch,
+DeepLearning.AI, Mar. 2024; "Agentic Design Patterns Parts 2­4," The
+Batch, Apr. 2024; "Agentic AI," DeepLearning.AI course, Oct. 2025;
+Agentic Knowledge Graphs course (DeepLearning.AI + Neo4j + Google
+ADK), Jul. 2026. E. Schluntz & B. Zhang, "Building Effective Agents,"
+Anthropic Engineering, Dec. 2024. Anthropic, "Building Effective AI
+Agents: Architecture Patterns and Implementation Frameworks," 2026.
+Referenced papers: Self-Refine (Madaan et al., 2023), Reflexion (Shinn
+et al., 2023), CRITIC (Gou et al., 2024), Toolformer (Schick et al., 2023),
+HuggingGPT (Shen et al., 2023), ChemCrow (Bran et al., 2023),
+AutoGen (Wu et al., 2023), ChatDev (Qian et al., 2024). Industry data:
+93% of IT leaders plan AI agents within 2 years (2025 Connectivity
+Benchmark Report); Deloitte predicts 25% of companies will have
+agentic pilots by 2025. All diagrams are original to this document.
+
+Term              APPENDIX: GLOSSARy
+Zero-shot
+Agentic workflow           TABLE VI
+Reflection         TERMS USED IN THIS NOTE
+Tool use
+Planning          Meaning
+Multi-agent       Single LLM call, no iteration.
+Prompt chaining   LLM prompted multiple times with iteration.
+                  LLM critiques and revises its output.
+                  LLM calls external capabilities.
+                  LLM decomposes task into steps.
+                  Multiple LLM instances collaborate.
+                  Fixed sequence of LLM calls.
+
+                                                                             11
+This document is an independent synthesis assembled for study. It is not a publication of, and is not affiliated with or endorsed by, Andrew Ng, DeepLearning.AI, Anthropic, Neo4j, or
+Google. All benchmark numbers are from Andrew Ng's published analysis. All quotes are from his public talks and writings. Diagrams are original.
+
+                                                                                     12
+
