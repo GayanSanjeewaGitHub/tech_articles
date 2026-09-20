@@ -190,6 +190,40 @@ Coarse RBAC roles (`admin`/`member`) are fine to keep in the *identity* JWT as a
 
 ---
 
+## Follow-up Q&A
+
+**What exactly is the "Token Exchange (RFC 8693)" request?**
+A concrete OAuth grant type — the orchestrator does `POST /token` with `grant_type=token-exchange`, `subject_token=<user's id_token>`, `audience=<sub-agent-1>`. The Authorization Server responds with a new token scoped to just that audience. It's a named IETF standard, not a custom/home-grown flow.
+
+**What is the PDP, and is the policy registry just a database keyed by role?**
+PDP = **Policy Decision Point**, the piece that evaluates "is this allowed?" — often a library/sidecar (OPA, Cedar) called by the Authorization Server, not necessarily its own server. And yes: the policy registry is typically a table mapping `role → allowed tools/scopes` (e.g., `member → [read_*]`, `admin → [read_*, write_*]`), stored separately from the IdP.
+
+**Doesn't storing roles in two places (IdP and Policy Store) cause drift?**
+Only if you duplicate the *assignment*. Correct split: the **IdP is the single source of truth for "what role does this user have"** (`role: "member"` in the id_token). The **Policy Store only hardcodes `role → permissions` mappings**, never a copy of who has which role — it looks up the user's role from the id_token fresh on every evaluation. Nothing to drift because the role assignment itself is never duplicated.
+
+**What happens when a role is added or removed?**
+Nothing needs to happen anywhere except the Policy Store's mapping table — no token revocation, no redeploy, no touching the IdP.
+- *Add a role*: insert one new `role → permissions` row; start assigning that role string to users in the IdP. Effective on the next token-exchange call.
+- *Remove a role*: delete/disable that mapping row. Any user still tagged with the old role in the IdP now gets a lookup miss — the Policy Store must **fail closed** (return zero scopes) on an unknown/removed role, never fail open.
+- Because nothing is cached beyond one short-lived (~60s) delegation token, the maximum staleness after any role change is one token lifetime — no revocation/blacklist infrastructure needed, unlike baking permissions into a long-lived JWT.
+
+**What does ID-JAG mean?**
+**Identity Assertion JWT Authorization Grant** — Okta's spec-based token type for this exact handoff: the IdP asserts a user's identity + scope to another app/service without re-prompting the user. It's the concrete token format behind the "delegation token" minted in step 12.
+
+**How is `jti: one-time-use` actually enforced — do we just increment a counter?**
+No. `jti` is a random unique ID per token, not a counter. Enforcement = a replay cache (e.g., Redis) records every `jti` accepted, with TTL equal to the token's expiry. On each use, check "have I seen this `jti`?" — reject if yes. Entries age out naturally once the token itself expires.
+
+**What does "PEP" mean?**
+**Policy Enforcement Point** — the component that actually enforces the PDP's decision at the moment of use (here: the MCP server checking the token on `tools/call`). PDP decides once; PEP enforces on every call, even if they run in the same process.
+
+**If tools are hardcoded in the MCP server's code, isn't per-role filtering hard to maintain?**
+Yes — hardcoded `if tool_name == "write_x": ...` branches scattered through the code drift and are hard to audit. Fix: each tool declares its **required scope as metadata** in a registry/manifest (`{name: "write_x", scope: "write_x"}`), and one generic middleware checks `token.scopes contains tool.scope` uniformly for every tool. Adding a tool then only means declaring its scope — no filtering-logic changes.
+
+**Once the short-lived, one-time token is handed to the sub-agent, is checking Redis for reuse the sub-agent's job, or the MCP server's?**
+The **MCP server's** — it's the PEP/resource server. The sub-agent is only a *bearer* of the token: it attaches it to `tools/list`/`tools/call` requests but never validates it. It can't be trusted to self-police, because the sub-agent is LLM-driven and can be prompt-injected or otherwise compromised — if replay-protection lived there, a hijacked sub-agent could just skip its own check. Security only holds if **whoever executes the privileged action** (the MCP server) is the one doing the `jti` Redis lookup, signature check, audience check, and expiry check — every time, on every call.
+
+---
+
 ## Sources
 
 - [OAuth for MCP — Emerging Enterprise Patterns for Agent Authorization (GitGuardian)](https://blog.gitguardian.com/oauth-for-mcp-emerging-enterprise-patterns-for-agent-authorization/)
